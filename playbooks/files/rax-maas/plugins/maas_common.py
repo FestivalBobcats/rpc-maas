@@ -651,13 +651,14 @@ def get_endpoint_url_for_service(service_type, auth_ref,
     for service in service_catalog:
         if service['type'] == service_type:
             for endpoint in service['endpoints']:
-                url = get_url_for_type(endpoint, url_type, auth_version)
-                if url is not None:
-                    # If version is not provided or it is provided and the url
-                    # ends with it, we want to return it, otherwise we want to
-                    # do nothing.
-                    if not version or url.endswith(version):
-                        return url
+                if endpoint['interface'] == url_type:
+                    url = get_url_for_type(endpoint, url_type, auth_version)
+                    if url is not None:
+                        # If version is not provided or it is provided and the url
+                        # ends with it, we want to return it, otherwise we want to
+                        # do nothing.
+                        if not version or url.endswith(version):
+                            return url
 
 
 def force_reauth():
