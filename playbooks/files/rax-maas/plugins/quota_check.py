@@ -44,14 +44,64 @@ def check(auth_ref, args):
         {'Content-type': 'application/json',
          'x-auth-token': auth_token})
     try:
-        params = {'tenant_id': keystone.tenant_id,
-                  'project_id': keystone.tenant_id}
+        if args.tenant_id:
+            params = {'tenant_id': args.tenant_id,
+                      'project_id': args.tenant_id}
+        else:
+            params = {}
 
         compute_endpoint = get_endpoint_url_for_service(
             'compute', auth_ref, endpoint_type)
 
 
-        print(compute_endpoint)
+        # - compute
+        #   - Cores
+        #   - Fixed IPs
+        #   - Injected Files
+        #   - Injected File Content Bytes
+        #   - Injected File Path Bytes
+        #   - Instances
+        #   - Key Pairs
+        #   - Metadata Items
+        #   - Ram
+        #   - Server Groups
+        #   - Server Group Members
+        #
+        # - volume
+        #   - Backups
+        #   - Backup Gigabytes
+        #   - Gigabytes
+        #   - Per Volume Gigabytes
+        #   - Snapshots
+        #   - Volumes
+        #
+        # - network
+        #   - Floating IPs
+        #   - Networks
+        #   - Ports
+        #   - RBAC Policies
+        #   - Routers
+        #   - Security Groups
+        #   - Security Group Rules
+        #   - Subnets
+        #   - Subnet Pools
+        #
+        # - dns
+        #   - api_export_size
+        #   - recordset_records
+        #   - zone_records
+        #   - zone_recordsets
+        #   - zones
+        #
+        # - load balancing
+        #   (since octavia is using underlying resources, maybe we should forget about this... also, octavia_check_quota.py)
+        #
+        # - object storage
+        #   `swift stat`
+        #   for each policy:
+        #     - containers
+        #     - objects
+        #     - bytes
 
 
         # volume_endpoint = get_endpoint_url_for_service(
@@ -132,9 +182,9 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description='Check Octavia API against local or remote address')
-    # parser.add_argument('tenant_id', nargs='?',
-    #                     help="Check Octavia API against "
-    #                          " local or remote address")
+    parser.add_argument('--tenant-id',
+                        nargs='?',
+                        help='Check OpenStack project quotas')
     parser.add_argument('--telegraf-output',
                         action='store_true',
                         default=False,
