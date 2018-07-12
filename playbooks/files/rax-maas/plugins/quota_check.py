@@ -32,6 +32,7 @@ def check(auth_ref, args):
     endpoint = get_endpoint_url_for_service('identity', auth_ref, 'public')
     keystone = get_keystone_client(auth_ref, endpoint)
     auth_token = keystone.auth_token
+    tenant_id = args.tenant_id
 
     s = requests.Session()
 
@@ -44,30 +45,133 @@ def check(auth_ref, args):
         {'Content-type': 'application/json',
          'x-auth-token': auth_token})
     try:
-        if args.tenant_id:
-            params = {'tenant_id': args.tenant_id,
-                      'project_id': args.tenant_id}
+        if tenant_id:
+            params = {'tenant_id': tenant_id,
+                      'project_id': tenant_id}
         else:
             params = {}
 
         compute_endpoint = get_endpoint_url_for_service(
             'compute', auth_ref, endpoint_type)
 
+        volume_endpoint = get_endpoint_url_for_service(
+            'volume', auth_ref, endpoint_type)
 
-        # - compute
-        #   - Cores
-        #   - Fixed IPs
-        #   - Injected Files
-        #   - Injected File Content Bytes
-        #   - Injected File Path Bytes
-        #   - Instances
-        #   - Key Pairs
-        #   - Metadata Items
-        #   - Ram
-        #   - Server Groups
-        #   - Server Group Members
+        # r = s.get('%s/os-quota-sets/%s' % (compute_endpoint, tenant_id),
+        #           params=params,
+        #           verify=False,
+        #           timeout=5)
         #
-        # - volume
+        # if (r.status_code != 200):
+        #     raise Exception("Compute quota request returned status code %d" %
+        #                     r.status_code)
+        #
+        # compute_quotas = r.json()['quota_set']
+
+        r = s.get('%s/limits' % compute_endpoint,
+                  params=params,
+                  verify=False,
+                  timeout=5)
+
+        if (r.status_code != 200):
+            raise Exception("Compute limits request returned status code %d" %
+                            r.status_code)
+
+        compute_limits = r.json()['limits']['absolute']
+        # maxServerMeta': 128,
+        # maxTotalInstances': 100,
+        # maxPersonality': 5,
+        # totalServerGroupsUsed': 0,
+        # maxImageMeta': 128,
+        # maxPersonalitySize': 10240,
+        # maxTotalRAMSize': 102400,
+        # maxServerGroups': 10,
+        # maxSecurityGroupRules': 20,
+        # maxTotalKeypairs': 100,
+        # totalCoresUsed': 0,
+        # totalRAMUsed': 0,
+        # maxSecurityGroups': 100,
+        # totalFloatingIpsUsed': 0,
+        # totalInstancesUsed': 0,
+        # maxServerGroupMembers': 10,
+        # maxTotalFloatingIps': 10,
+        # totalSecurityGroupsUsed': 1,
+        # maxTotalCores': 200
+
+
+
+
+        r = s.get('%s/limits' % volume_endpoint,
+                  params=params,
+                  verify=False,
+                  timeout=5)
+
+        if (r.status_code != 200):
+            raise Exception("Compute limits request returned status code %d" %
+                            r.status_code)
+
+        volume_limits = r.json()['limits']['absolute']
+
+
+
+        print("VOLUME LIMITS")
+        print(volume_limits)
+
+
+
+        # No problem fetching limits, log success
+        metric_bool('client_success', True, m_name='maas_quotas')
+        status_ok(m_name='maas_quotas')
+
+
+
+        # COMPUTE --------------------------------------------------------------
+
+        #   - Cores
+        metric('openstack_cores_quota_usage',
+               'double',
+               '%.3f' % max(0, compute_limits['totalCoresUsed'] /
+                   float(compute_limits['maxTotalCores']) * 100),
+               '%')
+
+        #   - Fixed IPs
+
+        #   - Injected Files
+
+        #   - Injected File Content Bytes
+
+        #   - Injected File Path Bytes
+
+        #   - Instances
+        metric('openstack_instances_quota_usage',
+               'double',
+               '%.3f' % max(0, compute_limits['totalInstancesUsed'] /
+                   float(compute_limits['maxTotalInstances']) * 100),
+               '%')
+
+        #   - Key Pairs
+
+        #   - Metadata Items
+
+        #   - Ram
+        metric('openstack_ram_quota_usage',
+               'double',
+               '%.3f' % max(0, compute_limits['totalRAMUsed'] /
+                   float(compute_limits['maxTotalRAMSize']) * 100),
+               '%')
+
+        #   - Server Groups
+        metric('openstack_server_groups_quota_usage',
+               'double',
+               '%.3f' % max(0, compute_limits['totalServerGroupsUsed'] /
+                   float(compute_limits['maxTotalServerGroups']) * 100),
+               '%')
+
+        #   - Server Group Members
+
+
+        # VOLUME ---------------------------------------------------------------
+
         #   - Backups
         #   - Backup Gigabytes
         #   - Gigabytes
@@ -104,35 +208,10 @@ def check(auth_ref, args):
         #     - bytes
 
 
-        # volume_endpoint = get_endpoint_url_for_service(
-        #     'volume', auth_ref, endpoint_type)
 
-        r = s.get('%s/limits' % compute_endpoint, params=params,
-                  verify=False,
-                  timeout=5)
 
-        if (r.status_code != 200):
-            raise Exception("Nova returned status code %s" % str(
-                r.status_code))
-        nova = r.json()['limits']['absolute']
 
-        # r = s.get('%s/limits' % volume_endpoint, params=params,
-        #           verify=False,
-        #           timeout=5)
-        #
-        # if (r.status_code != 200):
-        #     raise Exception(
-        #         "Volume returned status code %s" % str(r.status_code))
-        # volume = r.json()['limits']['absolute']
 
-        metric_bool('client_success', True, m_name='maas_octavia')
-        status_ok(m_name='maas_octavia')
-        metric('octavia_cores_quota_usage',
-               'double',
-               '%.3f' % (
-                   max(0, nova['totalCoresUsed'] / nova[
-                       'maxTotalCores'] * 100)),
-               '%')
         # metric('octavia_instances_quota_usage',
         #        'double',
         #        '%.3f' % (max(0, nova['totalInstancesUsed'] / nova[
@@ -163,15 +242,15 @@ def check(auth_ref, args):
         # Neutron got its limit support in Pike...
 
     except (requests.HTTPError, requests.Timeout, requests.ConnectionError):
-        metric_bool('client_success', False, m_name='maas_octavia')
+        metric_bool('client_success', False, m_name='maas_quotas')
     # Any other exception presumably isn't an API error
     except Exception as e:
-        metric_bool('client_success', False, m_name='maas_octavia')
-        status_err(str(e), m_name='maas_octavia')
+        metric_bool('client_success', False, m_name='maas_quotas')
+        status_err(str(e), m_name='maas_quotas')
     else:
-        metric_bool('client_success', True, m_name='maas_octavia')
+        metric_bool('client_success', True, m_name='maas_quotas')
 
-    status_ok(m_name='maas_octavia')
+    status_ok(m_name='maas_quotas')
 
 
 def main(args):
