@@ -57,6 +57,9 @@ def check(auth_ref, args):
         volume_endpoint = get_endpoint_url_for_service(
             'volume', auth_ref, endpoint_type)
 
+        object_store_endpoint = get_endpoint_url_for_service(
+            'object-store', auth_ref, endpoint_type)
+
         # r = s.get('%s/os-quota-sets/%s' % (compute_endpoint, tenant_id),
         #           params=params,
         #           verify=False,
@@ -99,7 +102,6 @@ def check(auth_ref, args):
         # maxTotalCores': 200
 
 
-
         r = s.get('%s/limits' % volume_endpoint,
                   params=params,
                   verify=False,
@@ -120,6 +122,30 @@ def check(auth_ref, args):
         # totalVolumesUsed': 1,
         # totalBackupsUsed': 0,
         # totalGigabytesUsed': 10
+
+
+        r = s.get(object_store_endpoint,
+                  params=params,
+                  verify=False,
+                  timeout=5)
+
+        if (r.status_code != 200):
+            raise Exception("Object Store request returned status code %d" %
+                            r.status_code)
+
+        swift_stats = r.headers
+        # X-Account-Object-Count: '7'
+        # X-Account-Container-Count: '4'
+        # X-Account-Bytes-Used: '650626560'
+        # X-Account-Bytes-Used-Actual: '650629120'
+        # X-Account-Storage-Policy-Default-Placement-Object-Count: '7'
+        # X-Account-Storage-Policy-Default-Placement-Container-Count: '4'
+        # X-Account-Storage-Policy-Default-Placement-Bytes-Used: '650626560'
+        # X-Account-Storage-Policy-Default-Placement-Bytes-Used-Actual: '650629120'
+
+        # X-Container-Meta-Quota-Bytes
+        # X-Container-Meta-Quota-Count
+
 
 
 
@@ -216,33 +242,64 @@ def check(auth_ref, args):
                '%')
 
 
-        # - network
+        # NETWORK --------------------------------------------------------------
+
         #   - Floating IPs
+        metric('openstack_floating_ips_quota_usage',
+               'double',
+               '%.3f' % max(0, compute_limits['totalFloatingIpsUsed'] /
+                   float(compute_limits['maxTotalFloatingIps']) * 100),
+               '%')
+
         #   - Networks
+
         #   - Ports
+
         #   - RBAC Policies
+
         #   - Routers
+
         #   - Security Groups
+        metric('openstack_security_groups_quota_usage',
+               'double',
+               '%.3f' % max(0, compute_limits['totalSecurityGroupsUsed'] /
+                   float(compute_limits['maxSecurityGroups']) * 100),
+               '%')
+
         #   - Security Group Rules
+
         #   - Subnets
+
         #   - Subnet Pools
-        #
-        # - dns
+
+
+
+        # DNS ------------------------------------------------------------------
+
         #   - api_export_size
+
         #   - recordset_records
+
         #   - zone_records
+
         #   - zone_recordsets
+
         #   - zones
-        #
-        # - load balancing
-        #   (since octavia is using underlying resources, maybe we should forget about this... also, octavia_check_quota.py)
-        #
-        # - object storage
-        #   `swift stat`
-        #   for each policy:
-        #     - containers
-        #     - objects
-        #     - bytes
+
+
+
+        # OBJECT STORAGE -------------------------------------------------------
+
+        #   - containers (not sure if you can actually set a container # quota)
+
+        #   - objects
+        # metric('openstack_swift_objects_quota_usage',
+        #        'double',
+        #        '%.3f' % max(0, swift_stats['X-Account-Object-Count'] /
+        #            float(compute_limits['X-Container-Meta-Quota-Count']) * 100), -------------------------------- not right, needs to be per container
+        #        '%')
+
+        #   - bytes
 
 
 
