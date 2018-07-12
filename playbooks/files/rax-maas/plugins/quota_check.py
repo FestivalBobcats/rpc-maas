@@ -100,22 +100,28 @@ def check(auth_ref, args):
 
 
 
-
         r = s.get('%s/limits' % volume_endpoint,
                   params=params,
                   verify=False,
                   timeout=5)
 
         if (r.status_code != 200):
-            raise Exception("Compute limits request returned status code %d" %
+            raise Exception("Volume limits request returned status code %d" %
                             r.status_code)
 
         volume_limits = r.json()['limits']['absolute']
+        # totalSnapshotsUsed': 0,
+        # maxTotalBackups': 10,
+        # maxTotalVolumeGigabytes': 5000,
+        # maxTotalSnapshots': 100,
+        # maxTotalBackupGigabytes': 1000,
+        # totalBackupGigabytesUsed': 0,
+        # maxTotalVolumes': 1024,
+        # totalVolumesUsed': 1,
+        # totalBackupsUsed': 0,
+        # totalGigabytesUsed': 10
 
 
-
-        print("VOLUME LIMITS")
-        print(volume_limits)
 
 
 
@@ -164,7 +170,7 @@ def check(auth_ref, args):
         metric('openstack_server_groups_quota_usage',
                'double',
                '%.3f' % max(0, compute_limits['totalServerGroupsUsed'] /
-                   float(compute_limits['maxTotalServerGroups']) * 100),
+                   float(compute_limits['maxServerGroups']) * 100),
                '%')
 
         #   - Server Group Members
@@ -173,12 +179,43 @@ def check(auth_ref, args):
         # VOLUME ---------------------------------------------------------------
 
         #   - Backups
+        metric('openstack_backups_quota_usage',
+               'double',
+               '%.3f' % max(0, volume_limits['totalBackupsUsed'] /
+                   float(volume_limits['maxTotalBackups']) * 100),
+               '%')
+
         #   - Backup Gigabytes
+        metric('openstack_backup_gb_quota_usage',
+               'double',
+               '%.3f' % max(0, volume_limits['totalBackupGigabytesUsed'] /
+                   float(volume_limits['maxTotalBackupGigabytes']) * 100),
+               '%')
+
         #   - Gigabytes
+        metric('openstack_volume_gb_quota_usage',
+               'double',
+               '%.3f' % max(0, volume_limits['totalGigabytesUsed'] /
+                   float(volume_limits['maxTotalVolumeGigabytes']) * 100),
+               '%')
+
         #   - Per Volume Gigabytes
+
         #   - Snapshots
+        metric('openstack_snapshots_quota_usage',
+               'double',
+               '%.3f' % max(0, volume_limits['totalSnapshotsUsed'] /
+                   float(volume_limits['maxTotalSnapshots']) * 100),
+               '%')
+
         #   - Volumes
-        #
+        metric('openstack_volumes_quota_usage',
+               'double',
+               '%.3f' % max(0, volume_limits['totalVolumesUsed'] /
+                   float(volume_limits['maxTotalVolumes']) * 100),
+               '%')
+
+
         # - network
         #   - Floating IPs
         #   - Networks
@@ -210,34 +247,6 @@ def check(auth_ref, args):
 
 
 
-
-
-        # metric('octavia_instances_quota_usage',
-        #        'double',
-        #        '%.3f' % (max(0, nova['totalInstancesUsed'] / nova[
-        #            'maxTotalInstances'] * 100)),
-        #        '%')
-        # metric('octavia_ram_quota_usage',
-        #        'double',
-        #        '%.3f' % (
-        #            max(0, nova['totalRAMUsed'] / nova[
-        #                'maxTotalRAMSize'] * 100)),
-        #        '%')
-        # metric('octavia_server_group_quota_usage',
-        #        'double',
-        #        '%.3f' % (max(0, nova['totalServerGroupsUsed'] / nova[
-        #            'maxServerGroups'] * 100)),
-        #        '%')
-        # metric('octavia_volume_gb_quota_usage',
-        #        'double',
-        #        '%.3f' % (max(0, volume['totalGigabytesUsed'] / volume[
-        #            'maxTotalVolumeGigabytes'] * 100)),
-        #        '%')
-        # metric('octavia_num_volume_quota_usage',
-        #        'double',
-        #        '%.3f' % (max(0, volume['totalVolumesUsed'] / volume[
-        #            'maxTotalVolumes'] * 100)),
-        #        '%')
 
         # Neutron got its limit support in Pike...
 
