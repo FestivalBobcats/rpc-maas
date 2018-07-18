@@ -28,6 +28,20 @@ from maas_common import status_ok
 import requests
 
 
+def get(session, url):
+    r = session.get(url, timeout=5)
+
+    if (r.status_code != 200):
+        raise Exception("%s returned status code %d" % (url, r.status_code))
+
+    return r
+
+
+def quota_metric(name, usage, limit):
+    val = 0 if limit == 0 else max(0, usage / float(limit))
+    metric(name, 'double', '%.3f' % (val * 100), '%')
+
+
 def check(auth_ref, args):
     endpoint = get_endpoint_url_for_service('identity', auth_ref, 'public')
     keystone = get_keystone_client(auth_ref, endpoint)
@@ -35,105 +49,67 @@ def check(auth_ref, args):
     tenant_id = args.tenant_id
 
     s = requests.Session()
+    s.verify = False
+    s.headers.update(
+        {'Content-type': 'application/json',
+         'x-auth-token': auth_token})
+
+    if tenant_id:
+        s.params = {'tenant_id': tenant_id, 'project_id': tenant_id}
+    else:
+        s.params = {}
+
+
+
+
 
     # TODO
     # TODO
     # TODO
     endpoint_type = 'public'
 
-    s.headers.update(
-        {'Content-type': 'application/json',
-         'x-auth-token': auth_token})
-    try:
-        if tenant_id:
-            params = {'tenant_id': tenant_id,
-                      'project_id': tenant_id}
-        else:
-            params = {}
 
+
+
+    try:
         compute_endpoint = get_endpoint_url_for_service(
             'compute', auth_ref, endpoint_type)
 
         volume_endpoint = get_endpoint_url_for_service(
             'volume', auth_ref, endpoint_type)
 
+        network_endpoint = get_endpoint_url_for_service(
+            'network', auth_ref, endpoint_type)
+
         object_store_endpoint = get_endpoint_url_for_service(
             'object-store', auth_ref, endpoint_type)
 
-        # r = s.get('%s/os-quota-sets/%s' % (compute_endpoint, tenant_id),
-        #           params=params,
-        #           verify=False,
-        #           timeout=5)
-        #
-        # if (r.status_code != 200):
-        #     raise Exception("Compute quota request returned status code %d" %
-        #                     r.status_code)
-        #
-        # compute_quotas = r.json()['quota_set']
-
-        r = s.get('%s/limits' % compute_endpoint,
-                  params=params,
-                  verify=False,
-                  timeout=5)
-
-        if (r.status_code != 200):
-            raise Exception("Compute limits request returned status code %d" %
-                            r.status_code)
-
-        compute_limits = r.json()['limits']['absolute']
-        # maxServerMeta': 128,
-        # maxTotalInstances': 100,
-        # maxPersonality': 5,
-        # totalServerGroupsUsed': 0,
-        # maxImageMeta': 128,
-        # maxPersonalitySize': 10240,
-        # maxTotalRAMSize': 102400,
-        # maxServerGroups': 10,
-        # maxSecurityGroupRules': 20,
-        # maxTotalKeypairs': 100,
-        # totalCoresUsed': 0,
-        # totalRAMUsed': 0,
-        # maxSecurityGroups': 100,
-        # totalFloatingIpsUsed': 0,
-        # totalInstancesUsed': 0,
-        # maxServerGroupMembers': 10,
-        # maxTotalFloatingIps': 10,
-        # totalSecurityGroupsUsed': 1,
-        # maxTotalCores': 200
 
 
-        r = s.get('%s/limits' % volume_endpoint,
-                  params=params,
-                  verify=False,
-                  timeout=5)
+        compute_limits = get(s, '%s/limits' % compute_endpoint).json()['limits']['absolute']
 
-        if (r.status_code != 200):
-            raise Exception("Volume limits request returned status code %d" %
-                            r.status_code)
+        volume_limits = get(s, '%s/limits' % volume_endpoint).json()['limits']['absolute']
 
-        volume_limits = r.json()['limits']['absolute']
-        # totalSnapshotsUsed': 0,
-        # maxTotalBackups': 10,
-        # maxTotalVolumeGigabytes': 5000,
-        # maxTotalSnapshots': 100,
-        # maxTotalBackupGigabytes': 1000,
-        # totalBackupGigabytesUsed': 0,
-        # maxTotalVolumes': 1024,
-        # totalVolumesUsed': 1,
-        # totalBackupsUsed': 0,
-        # totalGigabytesUsed': 10
+        network_quotas = get(s, '%s/v2.0/quotas/%s' % (network_endpoint, tenant_id)).json()['quota']
 
+        network_count = len(get(s, '%s/v2.0/networks' % network_endpoint).json()['networks'])
 
-        r = s.get(object_store_endpoint,
-                  params=params,
-                  verify=False,
-                  timeout=5)
+        port_count = len(get(s, '%s/v2.0/ports' % network_endpoint).json()['ports'])
 
-        if (r.status_code != 200):
-            raise Exception("Object Store request returned status code %d" %
-                            r.status_code)
+        rbac_policy_count = len(get(s, '%s/v2.0/rbac-policies' % network_endpoint).json()['rbac_policies'])
 
-        swift_stats = r.headers
+        router_count = len(get(s, '%s/v2.0/routers' % network_endpoint).json()['routers'])
+
+        security_group_rule_count = len(get(s, '%s/v2.0/security-group-rules' % network_endpoint).json()['security_group_rules'])
+
+        subnet_count = len(get(s, '%s/v2.0/subnets' % network_endpoint).json()['subnets'])
+
+        subnet_pool_count = len(get(s, '%s/v2.0/subnetpools' % network_endpoint).json()['subnetpools'])
+
+        swift_containers_resp = get(s, '%s?format=json' % object_store_endpoint)
+        swift_stats = swift_containers_resp.headers
+        swift_containers = swift_containers_resp.json()
+
         # X-Account-Object-Count: '7'
         # X-Account-Container-Count: '4'
         # X-Account-Bytes-Used: '650626560'
@@ -143,9 +119,63 @@ def check(auth_ref, args):
         # X-Account-Storage-Policy-Default-Placement-Bytes-Used: '650626560'
         # X-Account-Storage-Policy-Default-Placement-Bytes-Used-Actual: '650629120'
 
-        # X-Container-Meta-Quota-Bytes
-        # X-Container-Meta-Quota-Count
+        # X-Account-Meta-Quota-Bytes (bytes per account quota)
 
+        # X-Container-Meta-Quota-Bytes (bytes per container quota)
+        # X-Container-Meta-Quota-Count (objects per container quota)
+
+
+        swift_stats = get(s, object_store_endpoint).headers
+
+
+        swift_account_bytes_quota = swift_stats.get(
+            'X-Account-Meta-Quota-Bytes', -1)
+        swift_container_bytes_quota = swift_stats.get(
+            'X-Container-Meta-Quota-Bytes', -1)
+        swift_container_objects_quota = swift_stats.get(
+            'X-Container-Meta-Quota-Count', -1)
+
+        swift_account_bytes_usage = swift_stats.get(
+            'X-Account-Bytes-Used', -1)
+
+
+        metric['openstack_swift_container_bytes_quota_usage']
+
+        metric['openstack_swift_container_bytes_quota_usage_message'] # ----------- but then what is the value of usage above?
+
+
+                                                                                        # well you could just do a bool
+                                                                                        #
+                                                                                        #     (which removes the threshold, but that could be passed as an arg)
+                                                                                        #     (that arg is then used in both places in the check def)
+                                                                                        #
+                                                                                        # in addition to the bool, the message of the containers
+                                                                                        #
+                                                                                        #     ------ is the bool necessary, can you check if string blank?
+
+
+
+
+        #   - Fixed IPs (Compute)
+        # Not exactly sure how to count this one
+
+        #   - Injected Files (Compute)
+        # PER PROJECT, but feature being deprecated
+
+        #   - Injected File Content Bytes (Compute)
+        # NOT PER PROJECT
+
+        #   - Injected File Path Bytes (Compute)
+        # NOT PER PROJECT
+
+        #   - Key Pairs (Compute)
+        # Not monitorable from a single user, so probably not worth monitoring globally
+
+        #   - Metadata Items (Compute)
+        # NOT PER PROJECT (not really monitorable)
+
+        #   - api_export_size (DNS)
+        # Not a monitorable quota
 
 
 
@@ -160,152 +190,140 @@ def check(auth_ref, args):
         # COMPUTE --------------------------------------------------------------
 
         #   - Cores
-        metric('openstack_cores_quota_usage',
-               'double',
-               '%.3f' % max(0, compute_limits['totalCoresUsed'] /
-                   float(compute_limits['maxTotalCores']) * 100),
-               '%')
-
-        #   - Fixed IPs
-
-        #   - Injected Files
-
-        #   - Injected File Content Bytes
-
-        #   - Injected File Path Bytes
+        quota_metric('openstack_cores_quota_usage',
+                     compute_limits['totalCoresUsed'],
+                     compute_limits['maxTotalCores'])
 
         #   - Instances
-        metric('openstack_instances_quota_usage',
-               'double',
-               '%.3f' % max(0, compute_limits['totalInstancesUsed'] /
-                   float(compute_limits['maxTotalInstances']) * 100),
-               '%')
-
-        #   - Key Pairs
-
-        #   - Metadata Items
+        quota_metric('openstack_instances_quota_usage',
+                     compute_limits['totalInstancesUsed'],
+                     compute_limits['maxTotalInstances'])
 
         #   - Ram
-        metric('openstack_ram_quota_usage',
-               'double',
-               '%.3f' % max(0, compute_limits['totalRAMUsed'] /
-                   float(compute_limits['maxTotalRAMSize']) * 100),
-               '%')
+        quota_metric('openstack_ram_quota_usage',
+                     compute_limits['totalRAMUsed'],
+                     compute_limits['maxTotalRAMSize'])
 
         #   - Server Groups
-        metric('openstack_server_groups_quota_usage',
-               'double',
-               '%.3f' % max(0, compute_limits['totalServerGroupsUsed'] /
-                   float(compute_limits['maxServerGroups']) * 100),
-               '%')
+        quota_metric('openstack_server_groups_quota_usage',
+                     compute_limits['totalServerGroupsUsed'],
+                     compute_limits['maxServerGroups'])
 
         #   - Server Group Members
+            # PER SERVER GROUP ???????????
+                # Server
 
 
         # VOLUME ---------------------------------------------------------------
 
         #   - Backups
-        metric('openstack_backups_quota_usage',
-               'double',
-               '%.3f' % max(0, volume_limits['totalBackupsUsed'] /
-                   float(volume_limits['maxTotalBackups']) * 100),
-               '%')
+        quota_metric('openstack_backups_quota_usage',
+                     volume_limits['totalBackupsUsed'],
+                     volume_limits['maxTotalBackups'])
 
         #   - Backup Gigabytes
-        metric('openstack_backup_gb_quota_usage',
-               'double',
-               '%.3f' % max(0, volume_limits['totalBackupGigabytesUsed'] /
-                   float(volume_limits['maxTotalBackupGigabytes']) * 100),
-               '%')
+        quota_metric('openstack_backups_quota_usage',
+                     volume_limits['totalBackupGigabytesUsed'],
+                     volume_limits['maxTotalBackupGigabytes'])
 
         #   - Gigabytes
-        metric('openstack_volume_gb_quota_usage',
-               'double',
-               '%.3f' % max(0, volume_limits['totalGigabytesUsed'] /
-                   float(volume_limits['maxTotalVolumeGigabytes']) * 100),
-               '%')
+        quota_metric('openstack_volume_gb_quota_usage',
+                     volume_limits['totalGigabytesUsed'],
+                     volume_limits['maxTotalVolumeGigabytes'])
 
         #   - Per Volume Gigabytes
 
+            # NOT PER PROJECT TODO ----------------------
+
         #   - Snapshots
-        metric('openstack_snapshots_quota_usage',
-               'double',
-               '%.3f' % max(0, volume_limits['totalSnapshotsUsed'] /
-                   float(volume_limits['maxTotalSnapshots']) * 100),
-               '%')
+        quota_metric('openstack_snapshots_quota_usage',
+                     volume_limits['totalSnapshotsUsed'],
+                     volume_limits['maxTotalSnapshots'])
 
         #   - Volumes
-        metric('openstack_volumes_quota_usage',
-               'double',
-               '%.3f' % max(0, volume_limits['totalVolumesUsed'] /
-                   float(volume_limits['maxTotalVolumes']) * 100),
-               '%')
+        quota_metric('openstack_volumes_quota_usage',
+                     volume_limits['totalVolumesUsed'],
+                     volume_limits['maxTotalVolumes'])
 
 
         # NETWORK --------------------------------------------------------------
 
         #   - Floating IPs
-        metric('openstack_floating_ips_quota_usage',
-               'double',
-               '%.3f' % max(0, compute_limits['totalFloatingIpsUsed'] /
-                   float(compute_limits['maxTotalFloatingIps']) * 100),
-               '%')
+        quota_metric('openstack_floating_ips_quota_usage',
+                     compute_limits['totalFloatingIpsUsed'],
+                     compute_limits['maxTotalFloatingIps'])
 
         #   - Networks
+        quota_metric('openstack_networks_quota_usage',
+                     network_count,
+                     network_quotas['network'])
 
         #   - Ports
+        quota_metric('openstack_ports_quota_usage',
+                     port_count,
+                     network_quotas['port'])
 
         #   - RBAC Policies
+        quota_metric('openstack_rbac_policies_quota_usage',
+                     rbac_policy_count,
+                     network_quotas['rbac_policy'])
 
         #   - Routers
+        quota_metric('openstack_routers_quota_usage',
+                     router_count,
+                     network_quotas['router'])
 
         #   - Security Groups
-        metric('openstack_security_groups_quota_usage',
-               'double',
-               '%.3f' % max(0, compute_limits['totalSecurityGroupsUsed'] /
-                   float(compute_limits['maxSecurityGroups']) * 100),
-               '%')
+        quota_metric('openstack_security_groups_quota_usage',
+                     compute_limits['totalSecurityGroupsUsed'],
+                     compute_limits['maxSecurityGroups'])
 
         #   - Security Group Rules
+        quota_metric('openstack_security_group_rules_quota_usage',
+                     security_group_rule_count,
+                     network_quotas['security_group_rule'])
 
         #   - Subnets
+        quota_metric('openstack_subnets_quota_usage',
+                     subnet_count,
+                     network_quotas['subnet'])
 
         #   - Subnet Pools
+        quota_metric('openstack_subnetpools_quota_usage',
+                     subnet_pool_count,
+                     network_quotas['subnetpool'])
 
 
 
         # DNS ------------------------------------------------------------------
 
-        #   - api_export_size
+        #   - zones
 
         #   - recordset_records
+            # PER ZONE > RECORDSET
 
         #   - zone_records
+            # PER ZONE
 
         #   - zone_recordsets
-
-        #   - zones
+            # PER ZONE
 
 
 
         # OBJECT STORAGE -------------------------------------------------------
 
-        #   - containers (not sure if you can actually set a container # quota)
+        #   - total account bytes
 
         #   - objects
-        # metric('openstack_swift_objects_quota_usage',
-        #        'double',
-        #        '%.3f' % max(0, swift_stats['X-Account-Object-Count'] /
-        #            float(compute_limits['X-Container-Meta-Quota-Count']) * 100), -------------------------------- not right, needs to be per container
-        #        '%')
+            # PER CONTAINER
 
         #   - bytes
+            # PER CONTAINER
 
 
 
 
 
-        # Neutron got its limit support in Pike...
 
     except (requests.HTTPError, requests.Timeout, requests.ConnectionError):
         metric_bool('client_success', False, m_name='maas_quotas')
