@@ -29,15 +29,20 @@ import requests
 
 
 
+
+
 # TODO
 # TODO
 # TODO
 alert_usage_threshold = 0
+endpoint_type = 'public'
 
 
 
-def get(session, url):
-    r = session.get(url, timeout=5)
+
+
+def get(session, url, params={}):
+    r = session.get(url, timeout=5, params=params)
 
     if (r.status_code != 200):
         raise Exception("%s returned status code %d" % (url, r.status_code))
@@ -45,22 +50,29 @@ def get(session, url):
     return r
 
 
+def quota_usage(usage, limit):
+    return 0 if limit == 0 else max(0, usage / float(limit))
+
+
 def quota_metric(name, usage, limit):
-    val = 0 if limit == 0 else max(0, usage / float(limit))
-    metric(name, 'double', '%.3f' % (val * 100), '%', m_name='maas_quotas')
+    metric(name,
+           'double',
+           '%.3f' % (quota_usage(usage, limit) * 100),
+           '%',
+           m_name='maas_quotas')
 
 
-def nested_quota_metric(name, nested_item_name, items, limit, usage_fn=None, name_keys=['name']):
+def nested_quota_metric(name, nested_item_name, items, limit, usage_fn=None,
+                        name_keys=['name']):
     quota_usage_key = '%s_quota_usage' % nested_item_name
-
     usage_fn = usage_fn or (lambda item: len(item[nested_item_name]))
 
     for item in items:
-        item['full_name_for_quota'] = '/'.join(map(lambda k: item[k], name_keys))
-        item[quota_usage_key] = usage_fn(item) / float(limit) * 100
+        item['name_for_quota'] = '/'.join(map(lambda k: item[k], name_keys))
+        item[quota_usage_key] = quota_usage(usage_fn(item), limit) * 100
 
     items_exceeding_quota = [
-        '%s: %.3f%%' % (item['full_name_for_quota'], item[quota_usage_key])
+        '%s: %.3f%%' % (item['name_for_quota'], item[quota_usage_key])
         for item in items
         if item[quota_usage_key] >= alert_usage_threshold]
 
@@ -80,273 +92,96 @@ def check(auth_ref, args):
     s.verify = False
     s.headers.update(
         {'Content-type': 'application/json',
-         'x-auth-token': auth_token})
+         'x-auth-token': auth_token,
+         'x-auth-sudo-project-id': tenant_id}) # used by DNS API
 
-    s.params = {'project_id': tenant_id}
-
-
-
-
-    # TODO
-    # TODO
-    # TODO
-    # Are we counting anything with a page limit? (should look for metadata first if so)
+    tenant_params = {'project_id': tenant_id}
 
 
+    compute_endpoint = get_endpoint_url_for_service(
+        'compute', auth_ref, endpoint_type)
 
+    volume_endpoint = get_endpoint_url_for_service(
+        'volumev2', auth_ref, endpoint_type)
 
-    # TODO
-    # TODO
-    # TODO
-    endpoint_type = 'public'
+    network_endpoint = get_endpoint_url_for_service(
+        'network', auth_ref, endpoint_type)
 
+    dns_endpoint = get_endpoint_url_for_service(
+        'dns', auth_ref, endpoint_type)
 
+    object_store_endpoint = get_endpoint_url_for_service(
+        'object-store', auth_ref, endpoint_type)
 
 
     try:
-        compute_endpoint = get_endpoint_url_for_service(
-            'compute', auth_ref, endpoint_type)
+        compute_limits = get(s,
+            '%s/limits' % compute_endpoint,
+            tenant_params).json()['limits']['absolute']
 
-        volume_endpoint = get_endpoint_url_for_service(
-            'volumev2', auth_ref, endpoint_type)
+        server_groups = get(s,
+            '%s/os-server-groups' % compute_endpoint,
+            tenant_params).json()['server_groups']
 
-        network_endpoint = get_endpoint_url_for_service(
-            'network', auth_ref, endpoint_type)
+        volume_limits = get(s,
+            '%s/limits' % volume_endpoint,
+            tenant_params).json()['limits']['absolute']
 
-        dns_endpoint = get_endpoint_url_for_service(
-            'dns', auth_ref, endpoint_type)
+        network_quotas = get(s,
+            '%s/v2.0/quotas/%s' % (network_endpoint, tenant_id),
+            tenant_params).json()['quota']
 
-        object_store_endpoint = get_endpoint_url_for_service(
-            'object-store', auth_ref, endpoint_type)
+        network_count = len(get(s,
+            '%s/v2.0/networks' % network_endpoint,
+            tenant_params).json()['networks'])
 
+        port_count = len(get(s,
+            '%s/v2.0/ports' % network_endpoint,
+            tenant_params).json()['ports'])
 
+        rbac_policy_count = len(get(s,
+            '%s/v2.0/rbac-policies' % network_endpoint,
+            tenant_params).json()['rbac_policies'])
 
-        compute_limits = get(s, '%s/limits' % compute_endpoint).json()['limits']['absolute']
+        router_count = len(get(s,
+            '%s/v2.0/routers' % network_endpoint,
+            tenant_params).json()['routers'])
 
-        server_groups = get(s, '%s/os-server-groups' % compute_endpoint).json()['server_groups']
+        security_group_rule_count = len(get(s,
+            '%s/v2.0/security-group-rules' % network_endpoint,
+            tenant_params).json()['security_group_rules'])
 
-        volume_limits = get(s, '%s/limits' % volume_endpoint).json()['limits']['absolute']
+        subnet_count = len(get(s,
+            '%s/v2.0/subnets' % network_endpoint,
+            tenant_params).json()['subnets'])
 
-        network_quotas = get(s, '%s/v2.0/quotas/%s' % (network_endpoint, tenant_id)).json()['quota']
+        subnet_pool_count = len(get(s,
+            '%s/v2.0/subnetpools' % network_endpoint,
+            tenant_params).json()['subnetpools'])
 
-        network_count = len(get(s, '%s/v2.0/networks' % network_endpoint).json()['networks'])
+        dns_quotas = get(s,
+            '%s/v2/quotas/%s' % (dns_endpoint, tenant_id),
+            tenant_params).json()
 
-        port_count = len(get(s, '%s/v2.0/ports' % network_endpoint).json()['ports'])
-
-        rbac_policy_count = len(get(s, '%s/v2.0/rbac-policies' % network_endpoint).json()['rbac_policies'])
-
-        router_count = len(get(s, '%s/v2.0/routers' % network_endpoint).json()['routers'])
-
-        security_group_rule_count = len(get(s, '%s/v2.0/security-group-rules' % network_endpoint).json()['security_group_rules'])
-
-        subnet_count = len(get(s, '%s/v2.0/subnets' % network_endpoint).json()['subnets'])
-
-        subnet_pool_count = len(get(s, '%s/v2.0/subnetpools' % network_endpoint).json()['subnetpools'])
-
-        dns_quotas = get(s, '%s/v2/quotas/%s' % (dns_endpoint, tenant_id)).json()
-
-
-
-        dns_s = requests.Session()
-        dns_s.verify = False
-        dns_s.headers.update(
-            {'Content-type': 'application/json',
-             'x-auth-token': auth_token,
-             'x-auth-sudo-project-id': tenant_id})
-
-        dns_zones = get(dns_s, '%s/v2/zones' % dns_endpoint).json()['zones']
-
-        dns_zone_count = len(dns_zones)
+        dns_zones = get(s, '%s/v2/zones' % dns_endpoint).json()['zones']
 
         for dz in dns_zones:
-            dz['recordsets'] = get(dns_s, '%s/v2/zones/%s/recordsets' % (dns_endpoint, dz['id'])).json()['recordsets']
+            dz['recordsets'] = get(s,
+                '%s/v2/zones/%s/recordsets' % (dns_endpoint, dz['id'])
+                ).json()['recordsets']
 
+        swift_containers_resp = get(s,
+            '%s?format=json' % object_store_endpoint, tenant_params)
 
-
-
-        swift_containers_resp = get(s, '%s?format=json' % object_store_endpoint)
         swift_stats = swift_containers_resp.headers
         swift_containers = swift_containers_resp.json()
 
-        # X-Account-Object-Count: '7'
-        # X-Account-Container-Count: '4'
-        # X-Account-Bytes-Used: '650626560'
-        # X-Account-Bytes-Used-Actual: '650629120'
-        # X-Account-Storage-Policy-Default-Placement-Object-Count: '7'
-        # X-Account-Storage-Policy-Default-Placement-Container-Count: '4'
-        # X-Account-Storage-Policy-Default-Placement-Bytes-Used: '650626560'
-        # X-Account-Storage-Policy-Default-Placement-Bytes-Used-Actual: '650629120'
-
-        # X-Account-Meta-Quota-Bytes (bytes per account quota)
-
-        # X-Container-Meta-Quota-Bytes (bytes per container quota)
-        # X-Container-Meta-Quota-Count (objects per container quota)
-
-
-        swift_stats = get(s, object_store_endpoint).headers
-
-
         swift_account_bytes_quota = int(swift_stats.get(
             'X-Account-Meta-Quota-Bytes', -1))
-        # swift_container_bytes_quota = int(swift_stats.get(
-        #     'X-Container-Meta-Quota-Bytes', -1))
-        # swift_container_objects_quota = int(swift_stats.get(
-        #     'X-Container-Meta-Quota-Count', -1))
-
-        swift_account_bytes_usage = int(swift_stats.get(
-            'X-Account-Bytes-Used', -1))
-
-
-
-
-
-        # No problem fetching limits, log success
-        metric_bool('client_success', True, m_name='maas_quotas')
-        status_ok(m_name='maas_quotas')
-
-
-        # (Compute) Cores
-        quota_metric('os_cores_quota_usage',
-                     compute_limits['totalCoresUsed'],
-                     compute_limits['maxTotalCores'])
-
-        # (Compute) Instances
-        quota_metric('os_instances_quota_usage',
-                     compute_limits['totalInstancesUsed'],
-                     compute_limits['maxTotalInstances'])
-
-        # (Compute) RAM
-        quota_metric('os_ram_quota_usage',
-                     compute_limits['totalRAMUsed'],
-                     compute_limits['maxTotalRAMSize'])
-
-        # (Compute) Server groups
-        quota_metric('os_server_groups_quota_usage',
-                     compute_limits['totalServerGroupsUsed'],
-                     compute_limits['maxServerGroups'])
-
-        # (Compute) Server group members
-        nested_quota_metric(
-            'os_server_groups_exceeding_members_quota_threshold',
-            'members',
-            server_groups,
-            compute_limits['maxServerGroupMembers'])
-
-        # (Volume) Backups
-        quota_metric('os_backups_quota_usage',
-                     volume_limits['totalBackupsUsed'],
-                     volume_limits['maxTotalBackups'])
-
-        # (Volume) Backup gigabytes
-        quota_metric('os_backups_quota_usage',
-                     volume_limits['totalBackupGigabytesUsed'],
-                     volume_limits['maxTotalBackupGigabytes'])
-
-        # (Volume) Gigabytes
-        quota_metric('os_volume_gb_quota_usage',
-                     volume_limits['totalGigabytesUsed'],
-                     volume_limits['maxTotalVolumeGigabytes'])
-
-        # (Volume) Snapshots
-        quota_metric('os_snapshots_quota_usage',
-                     volume_limits['totalSnapshotsUsed'],
-                     volume_limits['maxTotalSnapshots'])
-
-        # (Volume) Volumes
-        quota_metric('os_volumes_quota_usage',
-                     volume_limits['totalVolumesUsed'],
-                     volume_limits['maxTotalVolumes'])
-
-        # (Network) Floating IPs
-        quota_metric('os_floating_ips_quota_usage',
-                     compute_limits['totalFloatingIpsUsed'],
-                     compute_limits['maxTotalFloatingIps'])
-
-        # (Network) Networks
-        quota_metric('os_networks_quota_usage',
-                     network_count,
-                     network_quotas['network'])
-
-        # (Network) Ports
-        quota_metric('os_ports_quota_usage',
-                     port_count,
-                     network_quotas['port'])
-
-        # (Network) RBAC policies
-        quota_metric('os_rbac_policies_quota_usage',
-                     rbac_policy_count,
-                     network_quotas['rbac_policy'])
-
-        # (Network) Routers
-        quota_metric('os_routers_quota_usage',
-                     router_count,
-                     network_quotas['router'])
-
-        # (Network) Security groups
-        quota_metric('os_security_groups_quota_usage',
-                     compute_limits['totalSecurityGroupsUsed'],
-                     compute_limits['maxSecurityGroups'])
-
-        # (Network) Security group rules
-        quota_metric('os_security_group_rules_quota_usage',
-                     security_group_rule_count,
-                     network_quotas['security_group_rule'])
-
-        # (Network) Subnets
-        quota_metric('os_subnets_quota_usage',
-                     subnet_count,
-                     network_quotas['subnet'])
-
-        # (Network) Subnet pools
-        quota_metric('os_subnet_pools_quota_usage',
-                     subnet_pool_count,
-                     network_quotas['subnetpool'])
-
-        # (DNS) Zones
-        quota_metric('os_dns_zones_quota_usage',
-                     dns_zone_count,
-                     dns_quotas['zones'])
-
-        # (DNS) Zone recordsets
-        nested_quota_metric(
-            'os_dns_zones_exceeding_recordsets_quota_threshold',
-            'recordsets',
-            dns_zones,
-            dns_quotas['zone_recordsets'])
-
-        # (DNS) Zone records
-        nested_quota_metric(
-            'os_dns_zones_exceeding_records_quota_threshold',
-            'records',
-            dns_zones,
-            dns_quotas['zone_records'],
-            lambda dz: sum([
-                len(rs['records'])
-                for dz in dns_zones
-                for rs in dz['recordsets']]))
-
-        # (DNS) Recordset records
-        nested_quota_metric(
-            'os_dns_zone_recordsets_exceeding_records_quota_threshold',
-            'records',
-            [rs for rs in dz['recordsets'] for dz in dns_zones],
-            dns_quotas['recordset_records'],
-            name_keys=('zone_name', 'name'))
-
-        # (Object storage) Bytes
-        quota_metric('os_object_store_account_bytes_quota_usage',
-                     swift_account_bytes_usage,
-                     swift_account_bytes_quota)
-
-        # (Object storage) Container objects
-
-
-        # (Object storage) Container bytes
-
-
-
-
-
+        swift_container_bytes_quota = int(swift_stats.get(
+            'X-Container-Meta-Quota-Bytes', -1))
+        swift_container_objects_quota = int(swift_stats.get(
+            'X-Container-Meta-Quota-Count', -1))
 
     except (requests.HTTPError, requests.Timeout, requests.ConnectionError):
         metric_bool('client_success', False, m_name='maas_quotas')
@@ -358,6 +193,156 @@ def check(auth_ref, args):
         metric_bool('client_success', True, m_name='maas_quotas')
 
     status_ok(m_name='maas_quotas')
+
+
+    # (Compute) Cores
+    quota_metric('os_cores_quota_usage',
+                 compute_limits['totalCoresUsed'],
+                 compute_limits['maxTotalCores'])
+
+    # (Compute) Instances
+    quota_metric('os_instances_quota_usage',
+                 compute_limits['totalInstancesUsed'],
+                 compute_limits['maxTotalInstances'])
+
+    # (Compute) RAM
+    quota_metric('os_ram_quota_usage',
+                 compute_limits['totalRAMUsed'],
+                 compute_limits['maxTotalRAMSize'])
+
+    # (Compute) Server groups
+    quota_metric('os_server_groups_quota_usage',
+                 compute_limits['totalServerGroupsUsed'],
+                 compute_limits['maxServerGroups'])
+
+    # (Compute) Server group members
+    nested_quota_metric(
+        'os_server_groups_exceeding_members_quota_threshold',
+        'members',
+        server_groups,
+        compute_limits['maxServerGroupMembers'])
+
+    # (Volume) Backups
+    quota_metric('os_backups_quota_usage',
+                 volume_limits['totalBackupsUsed'],
+                 volume_limits['maxTotalBackups'])
+
+    # (Volume) Backup gigabytes
+    quota_metric('os_backups_quota_usage',
+                 volume_limits['totalBackupGigabytesUsed'],
+                 volume_limits['maxTotalBackupGigabytes'])
+
+    # (Volume) Gigabytes
+    quota_metric('os_volume_gb_quota_usage',
+                 volume_limits['totalGigabytesUsed'],
+                 volume_limits['maxTotalVolumeGigabytes'])
+
+    # (Volume) Snapshots
+    quota_metric('os_snapshots_quota_usage',
+                 volume_limits['totalSnapshotsUsed'],
+                 volume_limits['maxTotalSnapshots'])
+
+    # (Volume) Volumes
+    quota_metric('os_volumes_quota_usage',
+                 volume_limits['totalVolumesUsed'],
+                 volume_limits['maxTotalVolumes'])
+
+    # (Network) Floating IPs
+    quota_metric('os_floating_ips_quota_usage',
+                 compute_limits['totalFloatingIpsUsed'],
+                 compute_limits['maxTotalFloatingIps'])
+
+    # (Network) Networks
+    quota_metric('os_networks_quota_usage',
+                 network_count,
+                 network_quotas['network'])
+
+    # (Network) Ports
+    quota_metric('os_ports_quota_usage',
+                 port_count,
+                 network_quotas['port'])
+
+    # (Network) RBAC policies
+    quota_metric('os_rbac_policies_quota_usage',
+                 rbac_policy_count,
+                 network_quotas['rbac_policy'])
+
+    # (Network) Routers
+    quota_metric('os_routers_quota_usage',
+                 router_count,
+                 network_quotas['router'])
+
+    # (Network) Security groups
+    quota_metric('os_security_groups_quota_usage',
+                 compute_limits['totalSecurityGroupsUsed'],
+                 compute_limits['maxSecurityGroups'])
+
+    # (Network) Security group rules
+    quota_metric('os_security_group_rules_quota_usage',
+                 security_group_rule_count,
+                 network_quotas['security_group_rule'])
+
+    # (Network) Subnets
+    quota_metric('os_subnets_quota_usage',
+                 subnet_count,
+                 network_quotas['subnet'])
+
+    # (Network) Subnet pools
+    quota_metric('os_subnet_pools_quota_usage',
+                 subnet_pool_count,
+                 network_quotas['subnetpool'])
+
+    # (DNS) Zones
+    quota_metric('os_dns_zones_quota_usage',
+                 len(dns_zones),
+                 dns_quotas['zones'])
+
+    # (DNS) Zone recordsets
+    nested_quota_metric(
+        'os_dns_zones_exceeding_recordsets_quota_threshold',
+        'recordsets',
+        dns_zones,
+        dns_quotas['zone_recordsets'])
+
+    # (DNS) Zone records
+    nested_quota_metric(
+        'os_dns_zones_exceeding_records_quota_threshold',
+        'records',
+        dns_zones,
+        dns_quotas['zone_records'],
+        lambda dz: sum([
+            len(rs['records'])
+            for dz in dns_zones
+            for rs in dz['recordsets']]))
+
+    # (DNS) Recordset records
+    nested_quota_metric(
+        'os_dns_zone_recordsets_exceeding_records_quota_threshold',
+        'records',
+        [rs for rs in dz['recordsets'] for dz in dns_zones],
+        dns_quotas['recordset_records'],
+        name_keys=('zone_name', 'name'))
+
+    # (Object storage) Bytes
+    quota_metric('os_object_store_account_bytes_quota_usage',
+                 int(swift_stats.get('X-Account-Bytes-Used')),
+                 swift_account_bytes_quota)
+
+    # (Object storage) Container objects
+    nested_quota_metric(
+        'os_object_store_containers_exceeding_objects_quota_threshold',
+        'objects',
+        swift_containers,
+        swift_container_objects_quota,
+        lambda container: container['count'])
+
+    # (Object storage) Container bytes
+    nested_quota_metric(
+        'os_object_store_containers_exceeding_bytes_quota_threshold',
+        'bytes',
+        swift_containers,
+        swift_container_bytes_quota,
+        lambda container: container['bytes'])
 
 
 def main(args):
