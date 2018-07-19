@@ -28,6 +28,14 @@ from maas_common import status_ok
 import requests
 
 
+
+# TODO
+# TODO
+# TODO
+alert_usage_threshold = 0
+
+
+
 def get(session, url):
     r = session.get(url, timeout=5)
 
@@ -40,6 +48,26 @@ def get(session, url):
 def quota_metric(name, usage, limit):
     val = 0 if limit == 0 else max(0, usage / float(limit))
     metric(name, 'double', '%.3f' % (val * 100), '%', m_name='maas_quotas')
+
+
+def nested_quota_metric(name, nested_item_name, items, limit, usage_fn=None, name_keys=['name']):
+    quota_usage_key = '%s_quota_usage' % nested_item_name
+
+    usage_fn = usage_fn or (lambda item: len(item[nested_item_name]))
+
+    for item in items:
+        item['full_name_for_quota'] = '/'.join(map(lambda k: item[k], name_keys))
+        item[quota_usage_key] = usage_fn(item) / float(limit) * 100
+
+    items_exceeding_quota = [
+        '%s: %.3f%%' % (item['full_name_for_quota'], item[quota_usage_key])
+        for item in items
+        if item[quota_usage_key] >= alert_usage_threshold]
+
+    metric(name,
+           'string',
+           ', '.join(items_exceeding_quota),
+           m_name='maas_quotas')
 
 
 def check(auth_ref, args):
@@ -55,13 +83,6 @@ def check(auth_ref, args):
          'x-auth-token': auth_token})
 
     s.params = {'project_id': tenant_id}
-
-
-
-    # TODO
-    # TODO
-    # TODO
-    alert_usage_threshold = 0.8
 
 
 
@@ -137,6 +158,9 @@ def check(auth_ref, args):
 
         dns_zone_count = len(dns_zones)
 
+        for dz in dns_zones:
+            dz['recordsets'] = get(dns_s, '%s/v2/zones/%s/recordsets' % (dns_endpoint, dz['id'])).json()['recordsets']
+
 
 
 
@@ -181,156 +205,143 @@ def check(auth_ref, args):
         status_ok(m_name='maas_quotas')
 
 
-
-        # COMPUTE --------------------------------------------------------------
-
-        #   - Cores
+        # (Compute) Cores
         quota_metric('os_cores_quota_usage',
                      compute_limits['totalCoresUsed'],
                      compute_limits['maxTotalCores'])
 
-        #   - Instances
+        # (Compute) Instances
         quota_metric('os_instances_quota_usage',
                      compute_limits['totalInstancesUsed'],
                      compute_limits['maxTotalInstances'])
 
-        #   - Ram
+        # (Compute) RAM
         quota_metric('os_ram_quota_usage',
                      compute_limits['totalRAMUsed'],
                      compute_limits['maxTotalRAMSize'])
 
-        #   - Server Groups
+        # (Compute) Server groups
         quota_metric('os_server_groups_quota_usage',
                      compute_limits['totalServerGroupsUsed'],
                      compute_limits['maxServerGroups'])
 
-        #   - Server Group Members
-        for sg in server_groups:
-            sg['members_quota_usage'] = len(sg['members']) / compute_limits['maxServerGroupMembers']
+        # (Compute) Server group members
+        nested_quota_metric(
+            'os_server_groups_exceeding_members_quota_threshold',
+            'members',
+            server_groups,
+            compute_limits['maxServerGroupMembers'])
 
-        server_groups_exceeding_members_quota = [
-            '%s: %.3f%%' % (sg['name'], sg['members_quota_usage'])
-            for sg in server_groups
-            if sg['members_quota_usage'] >= alert_usage_threshold]
-
-        metric_bool('os_server_group_members_quota_threshold_exceeded',
-                    server_groups_exceeding_members_quota > 0,
-                    m_name='maas_quotas')
-
-        metric('os_server_groups_exceeding_members_quota_threshold',
-               'string',
-               ', '.join(server_groups_exceeding_members_quota),
-               m_name='maas_quotas')
-
-
-
-        # VOLUME ---------------------------------------------------------------
-
-        #   - Backups
+        # (Volume) Backups
         quota_metric('os_backups_quota_usage',
                      volume_limits['totalBackupsUsed'],
                      volume_limits['maxTotalBackups'])
 
-        #   - Backup Gigabytes
+        # (Volume) Backup gigabytes
         quota_metric('os_backups_quota_usage',
                      volume_limits['totalBackupGigabytesUsed'],
                      volume_limits['maxTotalBackupGigabytes'])
 
-        #   - Gigabytes
+        # (Volume) Gigabytes
         quota_metric('os_volume_gb_quota_usage',
                      volume_limits['totalGigabytesUsed'],
                      volume_limits['maxTotalVolumeGigabytes'])
 
-        #   - Snapshots
+        # (Volume) Snapshots
         quota_metric('os_snapshots_quota_usage',
                      volume_limits['totalSnapshotsUsed'],
                      volume_limits['maxTotalSnapshots'])
 
-        #   - Volumes
+        # (Volume) Volumes
         quota_metric('os_volumes_quota_usage',
                      volume_limits['totalVolumesUsed'],
                      volume_limits['maxTotalVolumes'])
 
-
-        # NETWORK --------------------------------------------------------------
-
-        #   - Floating IPs
+        # (Network) Floating IPs
         quota_metric('os_floating_ips_quota_usage',
                      compute_limits['totalFloatingIpsUsed'],
                      compute_limits['maxTotalFloatingIps'])
 
-        #   - Networks
+        # (Network) Networks
         quota_metric('os_networks_quota_usage',
                      network_count,
                      network_quotas['network'])
 
-        #   - Ports
+        # (Network) Ports
         quota_metric('os_ports_quota_usage',
                      port_count,
                      network_quotas['port'])
 
-        #   - RBAC Policies
+        # (Network) RBAC policies
         quota_metric('os_rbac_policies_quota_usage',
                      rbac_policy_count,
                      network_quotas['rbac_policy'])
 
-        #   - Routers
+        # (Network) Routers
         quota_metric('os_routers_quota_usage',
                      router_count,
                      network_quotas['router'])
 
-        #   - Security Groups
+        # (Network) Security groups
         quota_metric('os_security_groups_quota_usage',
                      compute_limits['totalSecurityGroupsUsed'],
                      compute_limits['maxSecurityGroups'])
 
-        #   - Security Group Rules
+        # (Network) Security group rules
         quota_metric('os_security_group_rules_quota_usage',
                      security_group_rule_count,
                      network_quotas['security_group_rule'])
 
-        #   - Subnets
+        # (Network) Subnets
         quota_metric('os_subnets_quota_usage',
                      subnet_count,
                      network_quotas['subnet'])
 
-        #   - Subnet Pools
+        # (Network) Subnet pools
         quota_metric('os_subnet_pools_quota_usage',
                      subnet_pool_count,
                      network_quotas['subnetpool'])
 
-
-
-        # DNS ------------------------------------------------------------------
-
-        #   - zones
+        # (DNS) Zones
         quota_metric('os_dns_zones_quota_usage',
                      dns_zone_count,
                      dns_quotas['zones'])
 
-        #   - recordset_records
-            # PER ZONE > RECORDSET
+        # (DNS) Zone recordsets
+        nested_quota_metric(
+            'os_dns_zones_exceeding_recordsets_quota_threshold',
+            'recordsets',
+            dns_zones,
+            dns_quotas['zone_recordsets'])
 
-        #   - zone_records
-            # PER ZONE
+        # (DNS) Zone records
+        nested_quota_metric(
+            'os_dns_zones_exceeding_records_quota_threshold',
+            'records',
+            dns_zones,
+            dns_quotas['zone_records'],
+            lambda dz: sum([
+                len(rs['records'])
+                for dz in dns_zones
+                for rs in dz['recordsets']]))
 
-        #   - zone_recordsets
-            # PER ZONE
+        # (DNS) Recordset records
+        nested_quota_metric(
+            'os_dns_zone_recordsets_exceeding_records_quota_threshold',
+            'records',
+            [rs for rs in dz['recordsets'] for dz in dns_zones],
+            dns_quotas['recordset_records'],
+            name_keys=('zone_name', 'name'))
 
-
-
-        # OBJECT STORAGE -------------------------------------------------------
-
-        #   - total account bytes
+        # (Object storage) Bytes
         quota_metric('os_object_store_account_bytes_quota_usage',
                      swift_account_bytes_usage,
                      swift_account_bytes_quota)
 
-        #   - objects
-            # PER CONTAINER
+        # (Object storage) Container objects
 
-        #   - bytes
-            # PER CONTAINER
+
+        # (Object storage) Container bytes
 
 
 
