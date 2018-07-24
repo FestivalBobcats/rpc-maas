@@ -41,8 +41,12 @@ endpoint_type = 'public'
 
 
 
-def get(session, url, params={}):
-    r = session.get(url, timeout=5, params=params)
+def get(session, url, params={}, headers={}):
+
+    # TODO
+    print("--------- " + url)
+
+    r = session.get(url, timeout=15, params=params, headers=headers)
 
     if (r.status_code != 200):
         raise Exception("%s returned status code %d" % (url, r.status_code))
@@ -51,51 +55,87 @@ def get(session, url, params={}):
 
 
 def quota_usage(usage, limit):
-    return 0 if limit == 0 else max(0, usage / float(limit))
+    return 0 if limit == 0 else max(0, usage / float(limit) * 100)
 
 
-def quota_metric(name, usage, limit):
-    metric(name,
-           'double',
-           '%.3f' % (quota_usage(usage, limit) * 100),
-           '%',
+def project_quota_metric(project_quota_usage, key_name):
+    projects_exceeding_quota = []
+    for project_name, p in project_quota_usage.iteritems():
+        percent_usage = quota_usage(p['%s_usage' % key_name],
+                                    p['%s_limit' % key_name])
+        if percent_usage >= alert_usage_threshold:
+            projects_exceeding_quota.append(
+                '%s: %.3f%%' % (project_name, percent_usage))
+
+    metric('os_projects_exceeding_%s_quota_usage' % key_name,
+           'string',
+           ', '.join(projects_exceeding_quota),
            m_name='maas_quotas')
 
 
-def nested_quota_metric(name, nested_item_name, items, limit, usage_fn=None,
+def nested_quota_metric(project_quota_usage, key_name, inner_key_name,
                         name_keys=['name']):
-    quota_usage_key = '%s_quota_usage' % nested_item_name
-    usage_fn = usage_fn or (lambda item: len(item[nested_item_name]))
+    items_exceeding_quota = []
+    for project_name, p in project_quota_usage.iteritems():
 
-    for item in items:
-        item['name_for_quota'] = '/'.join(map(lambda k: item[k], name_keys))
-        item[quota_usage_key] = quota_usage(usage_fn(item), limit) * 100
+        print(p)
+        print(key_name)
 
-    items_exceeding_quota = [
-        '%s: %.3f%%' % (item['name_for_quota'], item[quota_usage_key])
-        for item in items
-        if item[quota_usage_key] >= alert_usage_threshold]
+        for item in p[key_name]:
+            full_name = '/'.join(map(lambda k: item[k], name_keys))
+            percent_usage = quota_usage(item['%s_usage' % inner_key_name],
+                                        p['%s_%s_limit' % (key_name, inner_key_name)])
 
-    metric(name,
+            if percent_usage >= alert_usage_threshold:
+                items_exceeding_quota.append(
+                    '%s/%s: %.3f%%' % (project_name, full_name, percent_usage))
+
+    metric('os_%s_exceeding_%s_quota_usage' % (key_name, inner_key_name),
            'string',
            ', '.join(items_exceeding_quota),
            m_name='maas_quotas')
+
+# def nested_quota_metric(name, nested_item_name, items, limit, usage_fn=None,
+#                         name_keys=['name']):
+#     quota_usage_key = '%s_quota_usage' % nested_item_name
+#     usage_fn = usage_fn or (lambda item: len(item[nested_item_name]))
+#
+#     for item in items:
+#         item['name_for_quota'] = '/'.join(map(lambda k: item[k], name_keys))
+#         item[quota_usage_key] = quota_usage(usage_fn(item), limit)
+#
+#     items_exceeding_quota = [
+#         '%s: %.3f%%' % (item['name_for_quota'], item[quota_usage_key])
+#         for item in items
+#         if item[quota_usage_key] >= alert_usage_threshold]
+#
+#     metric(name,
+#            'string',
+#            ', '.join(items_exceeding_quota),
+#            m_name='maas_quotas')
 
 
 def check(auth_ref, args):
     endpoint = get_endpoint_url_for_service('identity', auth_ref, 'public')
     keystone = get_keystone_client(auth_ref, endpoint)
     auth_token = keystone.auth_token
-    tenant_id = args.tenant_id
+
+
+
+
+    projects = keystone.projects.list()
+
+
+
+
 
     s = requests.Session()
     s.verify = False
-    s.headers.update(
-        {'Content-type': 'application/json',
-         'x-auth-token': auth_token,
-         'x-auth-sudo-project-id': tenant_id}) # used by DNS API
+    s.headers.update({'Content-type': 'application/json',
+                      'x-auth-token': auth_token})
 
-    tenant_params = {'project_id': tenant_id}
+
+
 
 
     compute_endpoint = get_endpoint_url_for_service(
@@ -114,81 +154,204 @@ def check(auth_ref, args):
         'object-store', auth_ref, endpoint_type)
 
 
+
+
+
+    # - you have to store all projects in RAM because you must combine them into a single metric
+
+    # - to avoid eating up every bit of RAM, you have to only store the info you need about each project
+
+    project_quota_usage = {}
+
+
+
     try:
-        compute_limits = get(s,
-            '%s/limits' % compute_endpoint,
-            tenant_params).json()['limits']['absolute']
+        for project in projects:
 
-        server_groups = get(s,
-            '%s/os-server-groups' % compute_endpoint,
-            tenant_params).json()['server_groups']
+            tenant_params = {'project_id': project.id}
 
-        volume_limits = get(s,
-            '%s/limits' % volume_endpoint,
-            tenant_params).json()['limits']['absolute']
+            project_quota_usage[project.name] = {}
 
-        network_quotas = get(s,
-            '%s/v2.0/quotas/%s' % (network_endpoint, tenant_id),
-            tenant_params).json()['quota']
+            compute_limits = get(s,
+                '%s/limits' % compute_endpoint,
+                tenant_params).json()['limits']['absolute']
 
-        network_count = len(get(s,
-            '%s/v2.0/networks' % network_endpoint,
-            tenant_params).json()['networks'])
+            project_quota_usage[project.name]['cores_usage'] = compute_limits['totalCoresUsed']
+            project_quota_usage[project.name]['cores_limit'] = compute_limits['maxTotalCores']
+            project_quota_usage[project.name]['instances_usage'] = compute_limits['totalInstancesUsed']
+            project_quota_usage[project.name]['instances_limit'] = compute_limits['maxTotalInstances']
+            project_quota_usage[project.name]['ram_usage'] = compute_limits['totalRAMUsed']
+            project_quota_usage[project.name]['ram_limit'] = compute_limits['maxTotalRAMSize']
+            project_quota_usage[project.name]['server_groups_usage'] = compute_limits['totalServerGroupsUsed']
+            project_quota_usage[project.name]['server_groups_limit'] = compute_limits['maxServerGroups']
+            project_quota_usage[project.name]['server_groups_members_limit'] = compute_limits['maxServerGroupMembers']
+            project_quota_usage[project.name]['floating_ips_usage'] = compute_limits['totalFloatingIpsUsed']
+            project_quota_usage[project.name]['floating_ips_limit'] = compute_limits['maxTotalFloatingIps']
+            project_quota_usage[project.name]['security_groups_usage'] = compute_limits['totalSecurityGroupsUsed']
+            project_quota_usage[project.name]['security_groups_limit'] = compute_limits['maxSecurityGroups']
 
-        port_count = len(get(s,
-            '%s/v2.0/ports' % network_endpoint,
-            tenant_params).json()['ports'])
+            # NOTE this call is extremely slow (due to poor API design I can
+            # only assume), but I can't think of any alternatives. API version
+            # < 2.13 does not include project_id in server_groups, which means
+            # all_projects=true doesn't provide information about the project
+            # ownership.
+            # server_groups = get(s,'%s/os-server-groups' % compute_endpoint,
+            #                     params={'all_projects': project.id},
+            #                     ).json()['server_groups']
+            #
+            # project_quota_usage[project.name]['server_groups'] = [
+            #     {
+            #         'name': sg['name'],
+            #         'members_usage': len(sg['members'])
+            #     }
+            #     for sg in server_groups
+            # ]
+            # TODO
+            # TODO
+            # TODO
+            # TODO
+            # TODO
+            # TODO
+            # TODO
+            # TODO
+            # TODO
+            # TODO
 
-        rbac_policy_count = len(get(s,
-            '%s/v2.0/rbac-policies' % network_endpoint,
-            tenant_params).json()['rbac_policies'])
+            volume_limits = get(s,
+                '%s/limits' % volume_endpoint,
+                tenant_params).json()['limits']['absolute']
 
-        router_count = len(get(s,
-            '%s/v2.0/routers' % network_endpoint,
-            tenant_params).json()['routers'])
+            project_quota_usage[project.name]['backups_usage'] = volume_limits['totalBackupsUsed']
+            project_quota_usage[project.name]['backups_limit'] = volume_limits['maxTotalBackups']
+            project_quota_usage[project.name]['backup_gb_usage'] = volume_limits['totalBackupGigabytesUsed']
+            project_quota_usage[project.name]['backup_gb_limit'] = volume_limits['maxTotalBackupGigabytes']
+            project_quota_usage[project.name]['gb_usage'] = volume_limits['totalGigabytesUsed']
+            project_quota_usage[project.name]['gb_limit'] = volume_limits['maxTotalVolumeGigabytes']
+            project_quota_usage[project.name]['snapshots_usage'] = volume_limits['totalSnapshotsUsed']
+            project_quota_usage[project.name]['snapshots_limit'] = volume_limits['maxTotalSnapshots']
+            project_quota_usage[project.name]['volumes_usage'] = volume_limits['totalVolumesUsed']
+            project_quota_usage[project.name]['volumes_limit'] = volume_limits['maxTotalVolumes']
 
-        security_group_rule_count = len(get(s,
-            '%s/v2.0/security-group-rules' % network_endpoint,
-            tenant_params).json()['security_group_rules'])
+            network_quotas = get(s,
+                '%s/v2.0/quotas/%s' % (network_endpoint, project.id),
+                tenant_params).json()['quota']
 
-        subnet_count = len(get(s,
-            '%s/v2.0/subnets' % network_endpoint,
-            tenant_params).json()['subnets'])
+            project_quota_usage[project.name]['networks_limit'] = network_quotas['network']
+            project_quota_usage[project.name]['ports_limit'] = network_quotas['port']
+            project_quota_usage[project.name]['rbac_policies_limit'] = network_quotas['rbac_policy']
+            project_quota_usage[project.name]['routers_limit'] = network_quotas['router']
+            project_quota_usage[project.name]['security_group_rules_limit'] = network_quotas['security_group_rule']
+            project_quota_usage[project.name]['subnets_limit'] = network_quotas['subnet']
+            project_quota_usage[project.name]['subnetpools_limit'] = network_quotas['subnetpool']
 
-        subnet_pool_count = len(get(s,
-            '%s/v2.0/subnetpools' % network_endpoint,
-            tenant_params).json()['subnetpools'])
+            project_quota_usage[project.name]['networks_usage'] = len(get(s,
+                '%s/v2.0/networks' % network_endpoint,
+                tenant_params).json()['networks'])
 
-        dns_quotas = get(s,
-            '%s/v2/quotas/%s' % (dns_endpoint, tenant_id),
-            tenant_params).json()
+            project_quota_usage[project.name]['ports_usage'] = len(get(s,
+                '%s/v2.0/ports' % network_endpoint,
+                tenant_params).json()['ports'])
 
-        dns_zones = get(s, '%s/v2/zones' % dns_endpoint).json()['zones']
+            project_quota_usage[project.name]['rbac_policies_usage'] = len(get(s,
+                '%s/v2.0/rbac-policies' % network_endpoint,
+                tenant_params).json()['rbac_policies'])
 
-        for dz in dns_zones:
-            dz['recordsets'] = get(s,
-                '%s/v2/zones/%s/recordsets' % (dns_endpoint, dz['id'])
-                ).json()['recordsets']
+            project_quota_usage[project.name]['routers_usage'] = len(get(s,
+                '%s/v2.0/routers' % network_endpoint,
+                tenant_params).json()['routers'])
 
-        swift_containers_resp = get(s,
-            '%s?format=json' % object_store_endpoint, tenant_params)
+            project_quota_usage[project.name]['security_group_rules_usage'] = len(get(s,
+                '%s/v2.0/security-group-rules' % network_endpoint,
+                tenant_params).json()['security_group_rules'])
 
-        swift_stats = swift_containers_resp.headers
-        swift_containers = swift_containers_resp.json()
+            project_quota_usage[project.name]['subnets_usage'] = len(get(s,
+                '%s/v2.0/subnets' % network_endpoint,
+                tenant_params).json()['subnets'])
 
-        swift_account_bytes_quota = int(swift_stats.get(
-            'X-Account-Meta-Quota-Bytes', -1))
-        swift_container_bytes_quota = int(swift_stats.get(
-            'X-Container-Meta-Quota-Bytes', -1))
-        swift_container_objects_quota = int(swift_stats.get(
-            'X-Container-Meta-Quota-Count', -1))
+            project_quota_usage[project.name]['subnetpools_usage'] = len(get(s,
+                '%s/v2.0/subnetpools' % network_endpoint,
+                tenant_params).json()['subnetpools'])
 
-    except (requests.HTTPError, requests.Timeout, requests.ConnectionError):
-        metric_bool('client_success', False, m_name='maas_quotas')
+            dns_quotas = get(s,
+                '%s/v2/quotas/%s' % (dns_endpoint, project.id),
+                headers={'x-auth-all-projects': 'True'}).json()
+
+            project_quota_usage[project.name]['dns_zones_limit'] = dns_quotas['zones']
+            project_quota_usage[project.name]['dns_zones_recordsets_limit'] = dns_quotas['zone_recordsets']
+            project_quota_usage[project.name]['dns_zones_records_limit'] = dns_quotas['zone_records']
+            project_quota_usage[project.name]['dns_zones_recordsets_records_limit'] = dns_quotas['recordset_records']
+
+            dns_zones = get(s,
+                '%s/v2/zones' % dns_endpoint,
+                headers={'x-auth-sudo-project-id': project.id}).json()['zones']
+
+            project_quota_usage[project.name]['dns_zones_usage'] = len(dns_zones)
+
+            dns_recordsets = get(s,
+                '%s/v2/recordsets' % dns_endpoint,
+                headers={'x-auth-sudo-project-id': project.id}).json()['recordsets']
+
+            project_quota_usage[project.name]['dns_zones_recordsets'] = [
+                {
+                    'name': rs['name'],
+                    'zone_name': rs['zone_name'],
+                    'records_usage': len(rs['records'])
+                }
+                for rs in dns_recordsets
+            ]
+
+            project_quota_usage[project.name]['dns_zones'] = []
+            for dz in dns_zones:
+                recordsets = [
+                    rs for rs in
+                    project_quota_usage[project.name]['dns_zones_recordsets']
+                    if rs['zone_name'] == dz['name']
+                ]
+                project_quota_usage[project.name]['dns_zones'].append({
+                    'name': dz['name'],
+                    'recordsets_usage': len(recordsets),
+                    'records_usage': sum(
+                        [rs['records_usage'] for rs in recordsets]
+                    )
+                })
+
+
+
+            # NOTE Swift API does not allow tenant params
+            # 
+            # swift_containers_resp = get(s,
+            #     '%s?format=json' % object_store_endpoint, tenant_params)
+            #
+            # swift_stats = swift_containers_resp.headers
+            #
+            # project_quota_usage[project.name]['swift_account_bytes_usage'] = int(swift_stats.get('X-Account-Bytes-Used'))
+            # project_quota_usage[project.name]['swift_account_bytes_limit'] = int(swift_stats.get('X-Account-Meta-Quota-Bytes', -1))
+            # project_quota_usage[project.name]['swift_containers_bytes_limit'] = int(swift_stats.get('X-Container-Meta-Quota-Bytes', -1))
+            # project_quota_usage[project.name]['swift_containers_objects_limit'] = int(swift_stats.get('X-Container-Meta-Quota-Count', -1))
+            #
+            # project_quota_usage[project.name]['swift_containers'] = swift_containers_resp.json()
+            #
+            # for c in project_quota_usage[project.name]['swift_containers']:
+            #     c['bytes_usage'] = c.pop('bytes')
+            #     c['objects_usage'] = c.pop('count')
+
+
+    # except (requests.HTTPError, requests.Timeout, requests.ConnectionError):
+    #     metric_bool('client_success', False, m_name='maas_quotas')
+
     # Any other exception presumably isn't an API error
     except Exception as e:
         metric_bool('client_success', False, m_name='maas_quotas')
-        status_err(str(e), m_name='maas_quotas')
+
+        # status_err(str(e), m_name='maas_quotas')
+
+
+        # TODO
+        # TODO
+        # TODO
+        raise(e)
+
+
     else:
         metric_bool('client_success', True, m_name='maas_quotas')
 
@@ -196,153 +359,92 @@ def check(auth_ref, args):
 
 
     # (Compute) Cores
-    quota_metric('os_cores_quota_usage',
-                 compute_limits['totalCoresUsed'],
-                 compute_limits['maxTotalCores'])
+    project_quota_metric(project_quota_usage, 'cores')
 
     # (Compute) Instances
-    quota_metric('os_instances_quota_usage',
-                 compute_limits['totalInstancesUsed'],
-                 compute_limits['maxTotalInstances'])
+    project_quota_metric(project_quota_usage, 'instances')
 
     # (Compute) RAM
-    quota_metric('os_ram_quota_usage',
-                 compute_limits['totalRAMUsed'],
-                 compute_limits['maxTotalRAMSize'])
+    project_quota_metric(project_quota_usage, 'ram')
 
     # (Compute) Server groups
-    quota_metric('os_server_groups_quota_usage',
-                 compute_limits['totalServerGroupsUsed'],
-                 compute_limits['maxServerGroups'])
+    project_quota_metric(project_quota_usage, 'server_groups')
 
     # (Compute) Server group members
-    nested_quota_metric(
-        'os_server_groups_exceeding_members_quota_threshold',
-        'members',
-        server_groups,
-        compute_limits['maxServerGroupMembers'])
+    # TODO
+    # TODO
+    # TODO
+    # TODO
+    # TODO
+    # nested_quota_metric(project_quota_usage, 'server_groups', 'members')
+    # TODO
+    # TODO
+    # TODO
+    # TODO
+    # TODO
 
     # (Volume) Backups
-    quota_metric('os_backups_quota_usage',
-                 volume_limits['totalBackupsUsed'],
-                 volume_limits['maxTotalBackups'])
+    project_quota_metric(project_quota_usage, 'backups')
 
     # (Volume) Backup gigabytes
-    quota_metric('os_backups_quota_usage',
-                 volume_limits['totalBackupGigabytesUsed'],
-                 volume_limits['maxTotalBackupGigabytes'])
+    project_quota_metric(project_quota_usage, 'backup_gb')
 
     # (Volume) Gigabytes
-    quota_metric('os_volume_gb_quota_usage',
-                 volume_limits['totalGigabytesUsed'],
-                 volume_limits['maxTotalVolumeGigabytes'])
+    project_quota_metric(project_quota_usage, 'gb')
 
     # (Volume) Snapshots
-    quota_metric('os_snapshots_quota_usage',
-                 volume_limits['totalSnapshotsUsed'],
-                 volume_limits['maxTotalSnapshots'])
+    project_quota_metric(project_quota_usage, 'snapshots')
 
     # (Volume) Volumes
-    quota_metric('os_volumes_quota_usage',
-                 volume_limits['totalVolumesUsed'],
-                 volume_limits['maxTotalVolumes'])
+    project_quota_metric(project_quota_usage, 'volumes')
 
     # (Network) Floating IPs
-    quota_metric('os_floating_ips_quota_usage',
-                 compute_limits['totalFloatingIpsUsed'],
-                 compute_limits['maxTotalFloatingIps'])
+    project_quota_metric(project_quota_usage, 'floating_ips')
 
     # (Network) Networks
-    quota_metric('os_networks_quota_usage',
-                 network_count,
-                 network_quotas['network'])
+    project_quota_metric(project_quota_usage, 'networks')
 
     # (Network) Ports
-    quota_metric('os_ports_quota_usage',
-                 port_count,
-                 network_quotas['port'])
+    project_quota_metric(project_quota_usage, 'ports')
 
     # (Network) RBAC policies
-    quota_metric('os_rbac_policies_quota_usage',
-                 rbac_policy_count,
-                 network_quotas['rbac_policy'])
+    project_quota_metric(project_quota_usage, 'rbac_policies')
 
     # (Network) Routers
-    quota_metric('os_routers_quota_usage',
-                 router_count,
-                 network_quotas['router'])
+    project_quota_metric(project_quota_usage, 'routers')
 
     # (Network) Security groups
-    quota_metric('os_security_groups_quota_usage',
-                 compute_limits['totalSecurityGroupsUsed'],
-                 compute_limits['maxSecurityGroups'])
+    project_quota_metric(project_quota_usage, 'security_groups')
 
     # (Network) Security group rules
-    quota_metric('os_security_group_rules_quota_usage',
-                 security_group_rule_count,
-                 network_quotas['security_group_rule'])
+    project_quota_metric(project_quota_usage, 'security_group_rules')
 
     # (Network) Subnets
-    quota_metric('os_subnets_quota_usage',
-                 subnet_count,
-                 network_quotas['subnet'])
+    project_quota_metric(project_quota_usage, 'subnets')
 
     # (Network) Subnet pools
-    quota_metric('os_subnet_pools_quota_usage',
-                 subnet_pool_count,
-                 network_quotas['subnetpool'])
+    project_quota_metric(project_quota_usage, 'subnetpools')
 
     # (DNS) Zones
-    quota_metric('os_dns_zones_quota_usage',
-                 len(dns_zones),
-                 dns_quotas['zones'])
+    project_quota_metric(project_quota_usage, 'dns_zones')
 
     # (DNS) Zone recordsets
-    nested_quota_metric(
-        'os_dns_zones_exceeding_recordsets_quota_threshold',
-        'recordsets',
-        dns_zones,
-        dns_quotas['zone_recordsets'])
+    nested_quota_metric(project_quota_usage, 'dns_zones', 'recordsets')
 
     # (DNS) Zone records
-    nested_quota_metric(
-        'os_dns_zones_exceeding_records_quota_threshold',
-        'records',
-        dns_zones,
-        dns_quotas['zone_records'],
-        lambda dz: sum([
-            len(rs['records'])
-            for dz in dns_zones
-            for rs in dz['recordsets']]))
+    nested_quota_metric(project_quota_usage, 'dns_zones', 'records')
 
     # (DNS) Recordset records
-    nested_quota_metric(
-        'os_dns_zone_recordsets_exceeding_records_quota_threshold',
-        'records',
-        [rs for rs in dz['recordsets'] for dz in dns_zones],
-        dns_quotas['recordset_records'],
-        name_keys=('zone_name', 'name'))
+    nested_quota_metric(project_quota_usage, 'dns_zones_recordsets', 'records')
 
-    # (Object storage) Bytes
-    quota_metric('os_object_store_account_bytes_quota_usage',
-                 int(swift_stats.get('X-Account-Bytes-Used')),
-                 swift_account_bytes_quota)
-
-    # (Object storage) Container objects
-    nested_quota_metric(
-        'os_object_store_containers_exceeding_objects_quota_threshold',
-        'objects',
-        swift_containers,
-        swift_container_objects_quota,
-        lambda container: container['count'])
-
-    # (Object storage) Container bytes
-    nested_quota_metric(
-        'os_object_store_containers_exceeding_bytes_quota_threshold',
-        'bytes',
-        swift_containers,
-        swift_container_bytes_quota,
-        lambda container: container['bytes'])
+    # # (Object storage) Bytes
+    # project_quota_metric(project_quota_usage, 'swift_account_bytes')
+    #
+    # # (Object storage) Container objects
+    # nested_quota_metric(project_quota_usage, 'swift_containers', 'objects')
+    #
+    # # (Object storage) Container bytes
+    # nested_quota_metric(project_quota_usage, 'swift_containers', 'bytes')
 
 
 def main(args):
@@ -352,10 +454,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description='Check Octavia API against local or remote address')
-    parser.add_argument('--tenant-id',
-                        nargs='?',
-                        help='Check OpenStack project quotas')
+        description='Check quotas per project in an OpenStack environment')
     parser.add_argument('--telegraf-output',
                         action='store_true',
                         default=False,
